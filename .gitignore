@@ -1,0 +1,30 @@
+# Python virtual environment
+.venv/
+
+# Downloaded Hayabusa CLI
+hayabusa/
+
+# Sample EVTX files 
+samples/
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Scan output / temp artifacts
+*.jsonl
+*.evtx
+
+# Editor temp files
+*.swp
+*.swo
+
+# Environment variables / secrets
+.env
+
+# OS clutter
+.DS_Store
+
+# Claude Code local state
+.claude/settings.local.json

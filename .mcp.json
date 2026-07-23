@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agentic-detection-mcp": {
+      "type": "stdio",
+      "command": "/home/nullghoul/Samyukta-Kurikala/ai-defense-labs/agentic-detection-mcp/.venv/bin/python",
+      "args": [
+        "server.py"
+      ],
+      "env": {}
+    }
+  }
+}

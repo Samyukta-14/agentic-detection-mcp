@@ -1,0 +1,9 @@
+# MCP server SDK (with the `mcp` CLI for `mcp run` / `mcp dev`)
+mcp[cli]>=1.0.0
+
+# YAML parsing for Hayabusa rule files
+PyYAML>=6.0
+
+# Note: Hayabusa is a standalone CLI binary (installed separately, not via pip)
+# and is invoked as a subprocess. Its JSON/JSONL output is parsed with the
+# Python standard library (json, csv, subprocess) — no extra packages required.
