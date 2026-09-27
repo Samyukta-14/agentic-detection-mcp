@@ -13,10 +13,17 @@ An MCP (Model Context Protocol) server that wraps [Hayabusa](https://github.com/
 
 ## Goals
 
+**Event Log Scanning (Module 3):**
 - Expose a `scan_evtx` tool that runs Hayabusa against EVTX files
 - Return results as structured JSON (not raw CLI text)
 - Support filtering by severity level (e.g. critical/high/medium/low)
 - Handle errors gracefully (missing files, Hayabusa not installed, non-zero exit codes, malformed output)
+
+**Detection Engineering Knowledge Base:**
+- Expose Sigma rules as browsable MCP resources
+- Expose ATT&CK technique mappings to detection rules
+- Allow Claude to query detection coverage for specific techniques
+- Combine knowledge base with Hayabusa scanning for comprehensive threat analysis
 
 ## Commands
 
@@ -45,6 +52,7 @@ pip install -r requirements.txt
 **Entry point:** `server.py`
 - Uses FastMCP (high-level MCP server API in mcp 1.28.1)
 - Implements a single tool: `scan_evtx(path: str, min_severity: str) -> dict`
+- Exposes MCP resources for Sigma rules and ATT&CK mappings
 
 **scan_evtx tool:**
 - Takes an EVTX file path or directory and a minimum severity level (`informational`, `low`, `medium`, `high`, `critical`)

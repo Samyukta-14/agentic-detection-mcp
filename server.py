@@ -1,10 +1,19 @@
-"""MCP server that wraps Hayabusa for EVTX (Windows Event Log) analysis.
+"""MCP server for detection engineering and EVTX analysis.
 
-Exposes two tools:
+Exposes tools for event log scanning and rule inspection:
 - `scan_evtx`: Runs the Hayabusa CLI against EVTX files, filters detections by
   severity, rule name, and other parameters, returning structured results.
 - `get_hayabusa_rules`: Lists available Hayabusa rules with optional filtering
-  by keyword and severity level, helping Claude understand what rules exist.
+  by keyword and severity level.
+
+Exposes resources for Sigma detection rules and ATT&CK coverage (detection:// URIs):
+- `detection://rules`: List all available Sigma rules with metadata.
+- `detection://rules/{rule_id}`: Get the full YAML content of a specific rule.
+- `detection://rules/by-technique/{technique_id}`: Find all rules for an ATT&CK
+  technique (e.g., T1566, T1486), enabling detection coverage queries.
+- `detection://attack/techniques/{technique_id}`: Get ATT&CK technique details
+  (name, description, platforms) with our detection rule coverage assessment
+  (covered/partial/gap status).
 """
 
 from __future__ import annotations
@@ -15,12 +24,14 @@ import os
 import shutil
 import subprocess
 import tempfile
+import urllib.request
 from collections import Counter
 from pathlib import Path
 
 import yaml
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import TextContent, Resource
 
 # The server instance. The name is what MCP clients see.
 mcp = FastMCP("agentic-detection-mcp")
@@ -101,6 +112,153 @@ def _find_rules_directory() -> Path | None:
         return local_rules
 
     return None
+
+
+def _find_sigma_rules_directory() -> Path | None:
+    """Locate the Sigma rules directory.
+
+    Looks for sigma-rules/ relative to this script.
+    """
+    local_sigma = Path(__file__).parent / "sigma-rules" / "rules"
+    if local_sigma.is_dir():
+        return local_sigma
+    return None
+
+
+def _parse_sigma_rule_file(file_path: Path) -> dict | None:
+    """Parse a Sigma rule YAML file and extract metadata.
+
+    Returns a dict with rule info, or None if parsing fails.
+    """
+    try:
+        with open(file_path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        if not isinstance(data, dict):
+            return None
+
+        tags = data.get("tags", [])
+        attack_tags = [tag.replace("attack.", "") for tag in tags if str(tag).startswith("attack.")]
+
+        return {
+            "id": data.get("id", ""),
+            "title": data.get("title", ""),
+            "description": data.get("description", ""),
+            "author": data.get("author", ""),
+            "date": str(data.get("date", "")),
+            "status": data.get("status", ""),
+            "level": data.get("level", ""),
+            "tags": tags,
+            "attack_techniques": attack_tags,
+            "logsource": data.get("logsource", {}),
+            "references": data.get("references", []),
+            "falsepositives": data.get("falsepositives", []),
+        }
+    except (OSError, yaml.YAMLError):
+        return None
+
+
+def _load_all_sigma_rules() -> dict[str, dict]:
+    """Load all Sigma rules from the sigma-rules directory.
+
+    Returns a mapping of rule ID to rule metadata.
+    """
+    sigma_dir = _find_sigma_rules_directory()
+    if not sigma_dir:
+        return {}
+
+    rules = {}
+    try:
+        for rule_file in sigma_dir.glob("**/*.yml"):
+            rule = _parse_sigma_rule_file(rule_file)
+            if rule and rule.get("id"):
+                rules[rule["id"]] = {**rule, "file_path": str(rule_file.relative_to(sigma_dir.parent))}
+    except OSError:
+        pass
+
+    return rules
+
+
+# Cache for ATT&CK data (loaded on first use)
+_ATTACK_CACHE: dict | None = None
+_ATTACK_TECHNIQUES_CACHE: dict[str, dict] | None = None
+
+
+def _fetch_attack_data() -> dict | None:
+    """Fetch ATT&CK Enterprise data from GitHub.
+
+    Returns the STIX bundle object, or None on error.
+    """
+    global _ATTACK_CACHE
+    if _ATTACK_CACHE is not None:
+        return _ATTACK_CACHE
+
+    url = "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master/enterprise-attack/enterprise-attack.json"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            _ATTACK_CACHE = json.loads(response.read().decode("utf-8"))
+        return _ATTACK_CACHE
+    except Exception:
+        return None
+
+
+def _build_attack_techniques_map() -> dict[str, dict]:
+    """Build a mapping from ATT&CK technique ID to technique details.
+
+    Returns a dict like: {"T1234": {"name": "...", "description": "...", ...}, ...}
+    """
+    global _ATTACK_TECHNIQUES_CACHE
+    if _ATTACK_TECHNIQUES_CACHE is not None:
+        return _ATTACK_TECHNIQUES_CACHE
+
+    _ATTACK_TECHNIQUES_CACHE = {}
+    attack_data = _fetch_attack_data()
+    if not attack_data:
+        return _ATTACK_TECHNIQUES_CACHE
+
+    for obj in attack_data.get("objects", []):
+        if obj.get("type") != "attack-pattern":
+            continue
+
+        ext_refs = obj.get("external_references", [])
+        for ext_ref in ext_refs:
+            if ext_ref.get("source_name") == "mitre-attack":
+                tech_id = ext_ref.get("external_id")
+                if tech_id:
+                    _ATTACK_TECHNIQUES_CACHE[tech_id] = {
+                        "id": tech_id,
+                        "name": obj.get("name", ""),
+                        "description": obj.get("description", ""),
+                        "url": ext_ref.get("url", ""),
+                        "x_mitre_platforms": obj.get("x_mitre_platforms", []),
+                    }
+                break
+
+    return _ATTACK_TECHNIQUES_CACHE
+
+
+def _normalize_technique_id(tech_id: str) -> str:
+    """Normalize a technique ID for consistent matching.
+
+    Examples: "T1566" -> "T1566", "t1566.001" -> "T1566.001"
+    """
+    return tech_id.upper()
+
+
+def _assess_coverage(
+    technique_id: str,
+    detected_by_rules: list[dict]
+) -> str:
+    """Assess detection coverage for a technique.
+
+    Returns one of: "covered" (3+ rules), "partial" (1-2 rules), "gap" (0 rules)
+    """
+    rule_count = len(detected_by_rules)
+    if rule_count >= 3:
+        return "covered"
+    elif rule_count >= 1:
+        return "partial"
+    else:
+        return "gap"
 
 
 def _parse_rule_file(file_path: Path) -> dict | None:
@@ -385,6 +543,175 @@ def get_hayabusa_rules(keyword: str | None = None, level_filter: str | None = No
         },
         "rules": rules,
     }
+
+
+@mcp.resource("detection://rules")
+def list_sigma_rules() -> TextContent:
+    """List all available Sigma detection rules with metadata."""
+    rules = _load_all_sigma_rules()
+    if not rules:
+        return TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "error",
+                "error": "no_rules_found",
+                "detail": "Sigma rules directory not found or is empty."
+            })
+        )
+
+    summary = []
+    for rule_id, rule in sorted(rules.items(), key=lambda x: x[1].get("title", "")):
+        summary.append({
+            "id": rule_id,
+            "title": rule.get("title", ""),
+            "level": rule.get("level", ""),
+            "status": rule.get("status", ""),
+            "author": rule.get("author", ""),
+            "techniques": rule.get("attack_techniques", []),
+        })
+
+    return TextContent(
+        type="text",
+        text=json.dumps({
+            "status": "ok",
+            "count": len(rules),
+            "rules": summary
+        }, indent=2)
+    )
+
+
+@mcp.resource("detection://rules/{rule_id}")
+def get_sigma_rule(rule_id: str) -> TextContent:
+    """Get the full content of a specific Sigma rule by ID."""
+    rules = _load_all_sigma_rules()
+    rule = rules.get(rule_id)
+
+    if not rule:
+        return TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "error",
+                "error": "rule_not_found",
+                "detail": f"Rule with ID {rule_id} not found."
+            })
+        )
+
+    sigma_dir = _find_sigma_rules_directory()
+    if not sigma_dir:
+        return TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "error",
+                "error": "sigma_dir_not_found",
+                "detail": "Sigma rules directory not found."
+            })
+        )
+
+    rule_file = sigma_dir.parent / rule.get("file_path", "")
+    try:
+        with open(rule_file, encoding="utf-8") as fh:
+            rule_content = fh.read()
+    except OSError:
+        rule_content = "(Unable to read rule file)"
+
+    return TextContent(
+        type="text",
+        text=rule_content
+    )
+
+
+@mcp.resource("detection://rules/by-technique/{technique_id}")
+def list_rules_by_technique(technique_id: str) -> TextContent:
+    """List all Sigma rules that detect a specific ATT&CK technique."""
+    rules = _load_all_sigma_rules()
+    normalized_technique = technique_id.lower().replace("t", "").lstrip("0")
+
+    matching_rules = []
+    for rule_id, rule in sorted(rules.items(), key=lambda x: x[1].get("title", "")):
+        techniques = rule.get("attack_techniques", [])
+        for tech in techniques:
+            if normalized_technique in tech.lower().replace("t", "").lstrip("0"):
+                matching_rules.append({
+                    "id": rule_id,
+                    "title": rule.get("title", ""),
+                    "level": rule.get("level", ""),
+                    "status": rule.get("status", ""),
+                    "author": rule.get("author", ""),
+                    "techniques": techniques,
+                })
+                break
+
+    return TextContent(
+        type="text",
+        text=json.dumps({
+            "status": "ok",
+            "technique": technique_id,
+            "count": len(matching_rules),
+            "rules": matching_rules
+        }, indent=2)
+    )
+
+
+@mcp.resource("detection://attack/techniques/{technique_id}")
+def get_attack_technique(technique_id: str) -> TextContent:
+    """Get ATT&CK technique details with detection rule coverage assessment."""
+    normalized_id = _normalize_technique_id(technique_id)
+    techniques_map = _build_attack_techniques_map()
+
+    technique = techniques_map.get(normalized_id)
+    if not technique:
+        return TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "error",
+                "error": "technique_not_found",
+                "detail": f"ATT&CK technique {technique_id} not found.",
+                "tried_id": normalized_id,
+            })
+        )
+
+    rules = _load_all_sigma_rules()
+    normalized_search = normalized_id.lower()
+
+    detected_by_rules = []
+    for rule_id, rule in sorted(rules.items(), key=lambda x: x[1].get("title", "")):
+        techniques = rule.get("attack_techniques", [])
+        for tech in techniques:
+            if normalized_search == tech.lower():
+                detected_by_rules.append({
+                    "id": rule_id,
+                    "title": rule.get("title", ""),
+                    "level": rule.get("level", ""),
+                    "status": rule.get("status", ""),
+                    "author": rule.get("author", ""),
+                })
+                break
+
+    coverage = _assess_coverage(normalized_id, detected_by_rules)
+
+    return TextContent(
+        type="text",
+        text=json.dumps({
+            "status": "ok",
+            "technique": {
+                "id": technique["id"],
+                "name": technique["name"],
+                "description": technique["description"],
+                "url": technique["url"],
+                "platforms": technique.get("x_mitre_platforms", []),
+            },
+            "detection": {
+                "coverage": coverage,
+                "rule_count": len(detected_by_rules),
+                "rules": detected_by_rules,
+            },
+            "coverage_notes": {
+                "covered": "3 or more rules detect this technique",
+                "partial": "1-2 rules detect this technique",
+                "gap": "No detection rules available for this technique",
+            }
+        }, indent=2)
+    )
 
 
 def main() -> None:
