@@ -2,9 +2,9 @@
 
 An agentic detection-engineering workbench that lets an LLM drive Windows event-log analysis while the detection logic and security judgment stay human-owned.
 
-At its core, this is an [MCP](https://modelcontextprotocol.io/) server with two halves. The **tool layer** wraps the [Hayabusa](https://github.com/Yamato-Security/hayabusa) EVTX scanner so an LLM (via Claude Code or Claude Desktop) can run scans and filter findings by severity. The **knowledge layer** exposes a Sigma rule corpus and its MITRE ATT&CK mappings as read-only resources, so the model reasons over a real rule set instead of recalling detections from memory. On top of both sits coverage analysis: which techniques the rule set covers, and where the gaps are.
+At its core, this is an [MCP](https://modelcontextprotocol.io/) server with two halves. The **tool layer** wraps the [Hayabusa](https://github.com/Yamato-Security/hayabusa) EVTX scanner so an LLM (via Claude Code) can run scans and filter findings by severity. The **knowledge layer** exposes a Sigma rule corpus and its MITRE ATT&CK mappings as read-only resources, so the model reasons over a real rule set instead of recalling detections from memory. On top of both sits coverage analysis: which techniques the rule set covers, and where the gaps are.
 
-> **Status: in progress.** The tool layer and the knowledge-base layer are both working. The rules currently loaded are cloned from upstream SigmaHQ, so the coverage reports describe *SigmaHQ's* coverage, not a detection posture I built. Authoring my own rules and testing them against real samples is the next step, and it's where the substance of the project lives. See [Roadmap](#roadmap).
+> **Status: in progress.** The tool layer and the knowledge-base layer are both working. The rules currently loaded are cloned from upstream SigmaHQ, so the coverage reports describe *SigmaHQ's* coverage, not a detection posture I built. Authoring my own rules and testing them against real samples is the next step. See [Roadmap](#roadmap).
 
 ## Origin and scope
 
@@ -15,13 +15,13 @@ The MCP server scaffolding follows a detection-engineering course that walks thr
 
 ## What it does now
 
-### Tools (actions the model can take)
+### Tools
 
 - **`scan_evtx`** runs Hayabusa against an EVTX file and returns findings as structured JSON, filterable by minimum severity.
 - **`analyze_coverage`** takes an ATT&CK technique ID or tactic name, reads the loaded rule corpus, and reports which techniques are covered versus where the gaps are.
 - **`suggest_rule`** takes a technique ID, checks the corpus for existing coverage, and proposes a detection approach or rule template if nothing covers it.
 
-### Resources (read-only data the model can browse)
+### Resources 
 
 | URI | Returns |
 | --- | --- |
